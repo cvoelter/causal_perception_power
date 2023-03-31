@@ -1,0 +1,277 @@
+---
+title: "Study 1 - causal perception - power simulation"
+author: "Christoph Völter"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: united
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(cowplot)
+library("gghalves")
+
+load("causal_perception_study1_power_sim_N24.RData")
+```
+
+## Generate data
+
+```{r echo=FALSE, include=FALSE}
+n.subject <- 24 # number subjects
+n.per.subject <- 3 # observations per subject
+n.per.condition <- 1 # observations per subject and condition
+subj.id <- as.factor(paste("subj", str_pad(1:n.subject, 2, pad = "0"), sep = "."))
+
+congruent.per <- 0 # performance in congruent condition
+gap.per <- c(500) # performance in gap condition
+lag.per <- c(500) # performance inlag condition
+```
+
+```{r echo=FALSE, include=FALSE}
+# add condition and trial number
+start.data <- data.frame(expand.grid(subj.id = subj.id, condition = c("congruent", "gap", "lag"), trial = c(1:n.per.condition))) %>%
+  arrange(subj.id)
+
+# add order
+all_for_order <- expand.grid(p1 = 1:3, p2 = 1:3, p3 = 1:3, stringsAsFactors = FALSE) 
+perms_order <- all_for_order[apply(all_for_order, 1, function(x) {length(unique(x)) == 3}),]
+order<-c(unlist(perms_order[1,]), unlist(perms_order[2,]), unlist(perms_order[3,]),unlist(perms_order[4,]), unlist(perms_order[5,]), unlist(perms_order[6,]))
+start.data$order <- as.factor(order)
+start.data <- start.data %>% 
+  arrange(subj.id, order)
+
+
+
+# add demographics 
+start.data$sex <- as.factor(rep(x = c("f", "m"), times = n.subject/2))[as.numeric(start.data$subj.id)]
+
+
+# z-transformation of covariates
+start.data$z.order <- as.vector(scale(as.numeric(start.data$order)))
+```
+# Data checks:
+```{r echo=FALSE, include=FALSE}
+
+# does each subject have only one sex and age?
+xx <- table(start.data$subj.id, start.data$sex)
+range(apply(X = xx > 0, MARGIN = 1, sum)) # should be 1 and 1
+
+xx <- table(start.data$order, start.data$sex)
+range(apply(X = xx > 0, MARGIN = 1, sum)) # should be 1 and 1
+
+xx <- table(start.data$subj.id, start.data$condition)
+range(apply(X = xx > 0, MARGIN = 1, sum))
+
+xx <- table(start.data$condition, start.data$order)
+range(apply(X = xx > 0, MARGIN = 1, sum))
+
+xx <- table(start.data$subj.id, start.data$order)
+range(apply(X = xx > 0, MARGIN = 1, sum))
+```
+
+## Simulation
+
+
+Test
+```{r eval=FALSE, include=FALSE}
+
+resid.sd <- 350#residual standard deviation
+subj.sd <- 500#random effect of individual
+icpt <- congruent.per#intercept
+
+sex.effect <- 0
+order.effect <- 0
+
+xdata<-start.data
+tot.n <- nrow(xdata)#total n
+m.mat <- model.matrix(object=~condition+sex+z.order, data <- xdata)
+coefs <- c("(Intercept)"=icpt, "conditiongap"=gap.per, "conditionlag"=lag.per,  "sexm"=sex.effect, "z.order"=order.effect)
+
+rv <- m.mat[, names(coefs)]%*%coefs+#fixed effects
+rnorm(n=n.subject, sd <- subj.sd)[as.numeric(subj.id)]+#random effect of subj.
+rnorm(n=tot.n, sd=resid.sd)#residual variation
+
+#plotting
+par(mar=c(2.7, 2.7, 0.2, 0.2), mgp=c(1.5, 0.3, 0),
+tcl=-0.15, las=1, cex.lab=0.7, cex.axis=0.5)
+plot(xdata$condition, rv)
+
+library(lme4)
+full=lmer(rv~condition+sex+z.order+(1|subj.id), data=xdata, REML=F)
+summary(full)
+drop1(full, test="Chisq")
+```
+
+Actual simulation
+
+```{r eval=FALSE, include=FALSE}
+n.simus <- 1000 # small number for testing
+tot.n <- nrow(xdata)#total n
+resid.sd <- 350#residual standard deviation
+subj.sd <- 500#random effect of individual
+icpt <- congruent.per#intercept
+sex.effect <- 0
+order.effect <- 0
+age.effect <- 0
+
+# create object to store the simulation parameters and results:
+all.res <- data.frame(
+  expand.grid(
+    n.subject = n.subject,
+    r.effect = subj.sd,
+    resid.sd = resid.sd,
+    gap.per = gap.per,
+    lag.per = lag.per,
+    congruent.per = congruent.per,
+    simu = 1:n.simus
+  )
+)
+all.res$icpt <- NA
+all.res$conditiongap <- NA
+all.res$conditionlag <- NA
+all.res$re.sd <- NA
+all.res$warns.full <- NA
+all.res$lrt.p.con <- NA
+all.res$lrt.p.sex <- NA
+all.res$lrt.p.order <- NA
+
+all.ests=matrix(NA, nrow=n.simus, ncol=1)
+colnames(all.ests)=c("lrt.p.con")
+
+# create data frame with design:
+## done above
+
+# load packages needed:
+library(lme4)
+# Loading required package: Matrix
+library(kyotil) # we want to store info about convergence issues
+
+# define control structure to make convergence more likely:
+contr <-
+  lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 10000))
+
+xdata <- start.data
+
+# run simulation
+for (i in 1:nrow(all.res)) {
+  set.seed(i) # allows to later replicate individual simulations
+  
+  m.mat <-
+    model.matrix(object = ~ condition + sex + z.order, data = xdata) # create model martix
+  
+  coefs <- c(
+    "(Intercept)" = congruent.per,
+    "conditiongap" = gap.per,
+    "conditionlag" = lag.per,
+    "sexm" = 0,
+    "z.order" = 0
+  )
+  # generate response:
+  xdata$rv = m.mat[, names(coefs)] %*% coefs + #fixed effects
+    rnorm(n = n.subject, sd = subj.sd)[as.numeric(subj.id)] + #random effect of subj.
+    rnorm(n = tot.n, sd = resid.sd)#residual variation
+  
+  # fit full model:
+  full <-
+    keepWarnings(lmer(
+      rv ~ condition + sex +  z.order + (1 | subj.id),
+      data = xdata,
+      REML = FALSE,
+      control = contr
+    ))
+
+  # store results:
+  all.res[i, c("(Intercept)",
+               "conditiongap",
+               "conditionlag",
+               "sexm",
+               "z.order")] <- fixef(full$value)
+  all.res[i, "re.sd"] <-
+    as.data.frame(summary(full$value)$varcor)[1, "sdcor"]
+  all.res[i, "warns.full"] <-
+    nchar(paste(full$warnings, collapse = ""))
+    all.res[i, "lrt.p.con"] <-
+    as.data.frame(drop1(full$value, test = "Chisq"))["condition", "Pr(Chi)"]
+  all.res[i, "lrt.p.sex"] <-
+    as.data.frame(drop1(full$value, test = "Chisq"))["sex", "Pr(Chi)"]
+  all.res[i, "lrt.p.order"] <-
+    as.data.frame(drop1(full$value, test = "Chisq"))["z.order", "Pr(Chi)"]
+}
+
+save.image("causal_perception_study1_power_sim_N24.RData")
+```
+
+## Evaluation of results
+
+-   number of warning per combinations of random effects (out of 1000 models per cell)\
+    Full model:\
+
+```{r echo=FALSE}
+#full model
+tapply(X=all.res[, "warns.full"]>0, INDEX=all.res[, c("congruent.per", "gap.per", "lag.per")],
+FUN=sum)
+#warning codes: 
+#363: unable to evaluate scaled gradient. Model failed to converge: degenerate  Hessian with 1 negative eigenvalues
+#205: Model is nearly unidentifiable: large eigenvalue ratio - Rescale variables?
+```
+
+
+
+-   plotting the estimates (all models)
+
+```{r echo=FALSE}
+par(
+  mar = c(3, 3, 0.2, 0.2),
+  mgp = c(1.7, 0.3, 0),
+  tcl = -0.15,
+  las = 1
+)
+plot(
+  x = as.numeric(as.factor(rep(
+    x = c("(Intercept)", "conditiongap", "conditionlag", "re.sd"),
+    each = nrow(all.res)
+  ))),
+  y = unlist(all.res[, c("(Intercept)", "conditiongap", "conditionlag", "re.sd")]),
+  pch = 19,
+  col = grey(level = 0.2, alpha = 0.2),
+  xaxt = "n",
+  xlim = c(0.5, 3.5),
+  ylab = "estimate",
+  xlab = ""
+)
+mtext(
+  text = c("(Intercept)", "conditiongap", "conditionlag", "re.sd"),
+  side = 1,
+  at = 1:3,
+  line = 0.2
+)
+```
+
+## Only models that converged are evaluated from here on:
+
+```{r include=FALSE}
+all.res2=subset(all.res, warns.full==0)
+
+```
+
+### How many models converged, have a significant full-null model comparison, and a significant LRT of condition?
+
+```{r echo=FALSE}
+
+lrt.data2 <- all.res2 %>%
+  group_by(gap.per, lag.per, congruent.per) %>%
+  summarise(
+    lrt.p.con.mean2 = mean(lrt.p.con),
+    n.sign.lrt2 = length(lrt.p.con[lrt.p.con < 0.05]),
+    n.lrt = n.simus,
+    #length(lrt.p.con),
+    proportion.sign.lrt2 = length(lrt.p.con[lrt.p.con < 0.05]) / n.simus
+  )
+
+lrt.data2
+```

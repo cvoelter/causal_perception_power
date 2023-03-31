@@ -1,0 +1,305 @@
+---
+title: "Study 3, 5, 6 - causal perception - power simulation"
+author: "Christoph Völter"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: united
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(cowplot)
+library("gghalves")
+
+load("causal_perception_study3_5_6_power_sim_N40.RData")
+```
+
+## Generate data
+
+```{r echo=FALSE, include=FALSE}
+n.subject <- 40 # number subjects
+n.per.subject <- 2 # observations per subject
+n.per.condition <- 1 # observations per subject and condition
+subj.id <- as.factor(paste("subj", str_pad(1:n.subject, 2, pad = "0"), sep = "."))
+testgr.congruent.per <- 0 # test group performance in congruent condition
+testgr.incongruent.per <- c(500) # test group performance in incongruent condition
+controlgr.congruent.per <- 0 # control group performance in congruent condition
+controlgr.incongruent.per <- 0 # control group performance in incongruent
+```
+
+
+```{r echo=FALSE, include=FALSE}
+start.data <- data.frame(subj.id = rep(subj.id, times = 1, each = 2))
+cb.data = data.frame(expand.grid(
+  condition = c("congruent", "incongruent"),
+  group = c("control", "test")
+))
+session = rep(c(1 , 2, 1, 2, 2, 1, 2, 1), times = n.subject / 4)
+
+start.data <- cbind(start.data, cb.data, session)
+start.data$sex <-
+  as.factor(rep(x = c("f", "m", "m", "f"), times = n.subject / 4))[as.numeric(start.data$subj.id)]
+
+# z-transformation of covariates
+start.data$z.session <-
+  as.vector(scale(as.numeric(start.data$session)))
+```
+
+
+# Data checks:
+
+```{r echo=FALSE, include=FALSE}
+# does each subject have only one sex and age?
+xx <- table(start.data$subj.id, start.data$sex)
+range(apply(X = xx > 0, MARGIN = 1, sum)) # should be 1 and 1
+
+xx <- table(start.data$session, start.data$sex)
+range(apply(X = xx > 0, MARGIN = 1, sum))
+
+xx <- table(start.data$subj.id, start.data$condition)
+range(apply(X = xx > 0, MARGIN = 1, sum))
+
+xx <- table(start.data$condition, start.data$session)
+range(apply(X = xx > 0, MARGIN = 1, sum))
+
+xx <- table(start.data$subj.id, start.data$session)
+range(apply(X = xx > 0, MARGIN = 1, sum))
+```
+
+
+## Simulation
+
+### Test run
+
+Preparation
+```{r include=FALSE}
+resid.sd <- 350#residual standard deviation
+subj.sd <- 250#random effect of individual
+
+icpt <- controlgr.congruent.per#intercept
+sex.effect <- 0
+session.effect <- 0
+
+xdata <- start.data
+tot.n <- nrow(xdata)#total n
+m.mat <-
+  model.matrix(object =  ~ group * condition + sex + z.session,
+               data = xdata)
+
+coefs <-
+  c(
+    "(Intercept)" = icpt,
+    "grouptest" = testgr.congruent.per - icpt,
+    "conditionincongruent" = controlgr.incongruent.per - icpt,
+    "sexm" = sex.effect,
+    "z.session" = session.effect,
+    "grouptest:conditionincongruent" = (testgr.incongruent.per - testgr.congruent.per) - (controlgr.incongruent.per - controlgr.congruent.per)
+  )
+
+rv <- m.mat[, names(coefs)]%*%coefs+#fixed effects
+rnorm(n=n.subject, sd=subj.sd)[as.numeric(subj.id)]+#random effect of subj.
+rnorm(n=tot.n, sd=resid.sd)#residual variation
+```
+
+
+```{r }
+#plotting
+par(
+  mar = c(2.7, 2.7, 0.2, 0.2),
+  mgp = c(1.5, 0.3, 0),
+  tcl = -0.15,
+  las = 1,
+  cex.lab = 0.7,
+  cex.axis = 0.5
+)
+plot(interaction(xdata$condition, xdata$group), rv)
+```
+
+
+```{r }
+library(lme4)
+full = lmer(rv ~ group*condition + sex + z.session + (1 |
+                                              subj.id),
+            data = xdata,
+            REML = F)
+summary(full)$coef
+drop1(full, test = "Chisq")
+```
+
+### Actual simulation
+```{r eval=FALSE, include=FALSE}
+n.simus <- 1000 # small number for testing
+tot.n <- nrow(xdata)#total n
+resid.sd <- 250#residual standard deviation
+subj.sd <- 250#random effect of individual
+
+icpt <- controlgr.congruent.per#intercept
+sex.effect <- 0
+order.effect <- 0
+
+# create object to store the simulation parameters and results:
+all.res <- data.frame(
+  expand.grid(
+    n.subject = n.subject,
+    r.effect = subj.sd,
+    resid.sd = resid.sd,
+    testgr.congruent.per = testgr.congruent.per,
+    testgr.incongruent.per = testgr.incongruent.per,
+    controlgr.congruent.per = controlgr.congruent.per,
+    controlgr.incongruent.per = controlgr.incongruent.per,
+    simu = 1:n.simus
+  )
+)
+all.res$icpt <- NA
+all.res$grouptest <- NA
+all.res$conditionincongruent <- NA
+all.res$grouptest_conditionincongruent <- NA
+all.res$re.sd <- NA
+all.res$warns.full <- NA
+all.res$warns.null <- NA
+all.res$lrt.p.group_condition_int <- NA
+all.res$lrt.p.sex <- NA
+all.res$lrt.p.session <- NA
+all.res$full.null.p <- NA
+
+all.ests <- matrix(NA, nrow=n.simus, ncol=1)
+
+# create data frame with design:
+## done above
+
+# load packages needed:
+library(lme4)
+# Loading required package: Matrix
+library(kyotil) # we want to store info about convergence issues
+
+# define control structure to make convergence more likely:
+contr <- lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 10000))
+
+xdata <- start.data
+
+# run simulation
+for (i in 1:nrow(all.res)) {
+  set.seed(i) # allows to later replicate individual simulations
+  
+  m.mat <-
+    model.matrix(object = ~ group * condition + sex + z.session,
+                 data = xdata) # create model martix
+  
+  coefs <-
+    c(
+      "(Intercept)" = icpt,
+      "grouptest" = all.res[i, "testgr.congruent.per"] - icpt,
+      "conditionincongruent" = all.res[i, "controlgr.incongruent.per"] - icpt,
+      "sexm" = sex.effect,
+      "z.session" = session.effect,
+      "grouptest:conditionincongruent" = (all.res[i, "testgr.incongruent.per"] -
+                                            all.res[i, "testgr.congruent.per"]) - (all.res[i, "controlgr.incongruent.per"] -
+                                                                                     all.res[i, "controlgr.congruent.per"])
+    )
+  # generate response:
+  xdata$rv <- m.mat[, names(coefs)] %*% coefs + #fixed effects
+    rnorm(n = n.subject, sd = subj.sd)[as.numeric(subj.id)] + #random effect of subj.
+    rnorm(n = tot.n, sd = resid.sd)#residual variation
+  
+  # fit full model:
+  full <-
+    keepWarnings(lmer(rv ~ group*condition + sex + z.session + 
+      (1 |subj.id),
+      data = xdata,
+      REML = FALSE,
+      control = contr
+    ))
+  
+  # fit null model:
+  null <-
+    keepWarnings(lmer(rv ~  sex + z.session + 
+      (1 |subj.id),
+      data = xdata,
+      REML = FALSE,
+      control = contr
+    ))
+  
+  # store results:
+  all.res[i, c("(Intercept)",
+               "grouptest",
+               "conditionincongruent",
+               "sexm",
+               "z.session",
+               grouptest_conditionincongruent="grouptest:conditionincongruent")] <- fixef(full$value)
+  all.res[i, "re.sd"] <-
+    as.data.frame(summary(full$value)$varcor)[1, "sdcor"]
+  all.res[i, "warns.full"] <-
+    nchar(paste(full$warnings, collapse = ""))
+  all.res[i, "warns.null"] <- nchar(paste(null$warnings, collapse = ""))
+   all.res[i, "lrt.p.sex"] <-
+    as.data.frame(drop1(full$value, test = "Chisq"))["sex", "Pr(Chi)"]
+  all.res[i, "lrt.p.session"] <-
+    as.data.frame(drop1(full$value, test = "Chisq"))["z.session", "Pr(Chi)"]
+  all.res[i, "lrt.p.group_condition_int"] <-
+    as.data.frame(drop1(full$value, test = "Chisq"))["group:condition", "Pr(Chi)"]
+  all.res[i, "full.null.p"] <- as.data.frame(anova(null$value, full$value, test = "Chisq"))[2, "Pr(>Chisq)"]
+}
+
+save.image("causal_perception_study3_5_6_power_sim_N40.RData")
+```
+
+## Evaluation of results 
+
+* number of warning per combinations of random effects (out of 1000 models per cell)  
+Full model:  
+```{r echo=FALSE}
+#full model
+tapply(X=all.res[, "warns.full"]>0, INDEX=all.res[, c("testgr.congruent.per", "testgr.incongruent.per", "controlgr.congruent.per", "controlgr.incongruent.per")],
+FUN=sum)
+#warning codes: 
+#363: unable to evaluate scaled gradient. Model failed to converge: degenerate  Hessian with 1 negative eigenvalues
+#205: Model is nearly unidentifiable: large eigenvalue ratio - Rescale variables?
+```
+
+* plotting the estimates (all models)
+
+```{r echo=FALSE}
+par(mar=c(3, 3, 0.2, 0.2), mgp=c(1.7, 0.3, 0), tcl=-0.15, las=1)
+plot(
+  x = as.numeric(as.factor(rep(
+    x = c("(Intercept)", "grouptest_conditionincongruent", "re.sd"),
+    each = nrow(all.res)
+  ))),
+  y = unlist(all.res[, c("(Intercept)", "grouptest:conditionincongruent", "re.sd")]),
+  pch = 19, col = grey(level = 0.2, alpha = 0.2),
+  xaxt = "n", xlim = c(0.5, 3.5), ylab = "estimate", xlab = ""
+)
+mtext(text = c("(Intercept)", "grouptest:conditionincongruent", "re.sd"), side = 1, at = 1:3, line = 0.2)
+```
+
+## Only models that converged are evaluated from here on:  
+
+```{r include=FALSE}
+all.res2=subset(all.res, warns.full==0)
+
+
+```
+
+
+### How many models converged, have a significant full-null model comparison, and a significant LRT of condition?  
+```{r echo=FALSE}
+
+lrt.data2 <- all.res2 %>%
+  filter(full.null.p<0.05)%>%
+  group_by(testgr.congruent.per, testgr.incongruent.per, controlgr.congruent.per, controlgr.incongruent.per) %>%
+  summarise(lrt.p.int.mean2 = mean(lrt.p.group_condition_int), 
+            n.sign.lrt_int = length(lrt.p.group_condition_int[lrt.p.group_condition_int < 0.05]), 
+            n.lrt = n.simus,#length(lrt.p.con), 
+            proportion.sign.lrt.int = length(lrt.p.group_condition_int[lrt.p.group_condition_int < 0.05]) / n.simus,
+            proportion.sign.lrt.sex = length(lrt.p.group_condition_int[lrt.p.sex < 0.05]) / n.simus,
+            proportion.sign.lrt.session = length(lrt.p.group_condition_int[lrt.p.session < 0.05]) / n.simus)
+
+lrt.data2
+```
+
+
